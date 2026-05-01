@@ -1,4 +1,4 @@
-import sys, os, subprocess, threading, platform, shutil, gi
+import sys, os, subprocess, threading, platform, shutil, gi, json, time, urllib.request, re
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio, GLib
@@ -7,6 +7,7 @@ _ = lambda s: s
 
 USER_CONFIG_DIR = os.path.expanduser("~/.config/darkside-tweaks")
 SAFETY_FLAG_FILE = os.path.join(USER_CONFIG_DIR, "safety_setup_done")
+REPO_CACHE_FILE = os.path.join(USER_CONFIG_DIR, "repo_cache.json")
 
 # --- DYNAMIC ICON GENERATOR ---
 ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
@@ -53,6 +54,14 @@ def get_gpu_name():
 def get_display_server():
     return os.environ.get('XDG_SESSION_TYPE', 'Unknown').capitalize()
 
+def get_installed_nvidia_version():
+    try:
+        res = subprocess.run(['modinfo', 'nvidia'], capture_output=True, text=True)
+        match = re.search(r'version:\s+([\d.]+)', res.stdout)
+        if match: return match.group(1)
+    except Exception: pass
+    return None
+
 def is_app_installed(apt_cmd=None, flatpak_id=None):
     if apt_cmd and shutil.which(apt_cmd): return True
     if flatpak_id:
@@ -61,16 +70,40 @@ def is_app_installed(apt_cmd=None, flatpak_id=None):
         except FileNotFoundError: pass
     return False
 
+def check_repo_support_cached():
+    now = time.time()
+    cache_data = {"kisak_supported": False, "nvidia_supported": True, "last_check": 0}
+    if os.path.exists(REPO_CACHE_FILE):
+        try:
+            with open(REPO_CACHE_FILE, 'r') as f: cache_data = json.load(f)
+        except Exception: pass
+    if now - cache_data["last_check"] > 604800:
+        try:
+            codename = subprocess.run(["lsb_release", "-cs"], capture_output=True, text=True).stdout.strip()
+            kisak_url = f"https://ppa.launchpadcontent.net/kisak/kisak-mesa/ubuntu/dists/{codename}/"
+            cache_data["kisak_supported"] = urllib.request.urlopen(kisak_url, timeout=3).getcode() == 200
+            nv_url = f"https://ppa.launchpadcontent.net/graphics-drivers/ppa/ubuntu/dists/{codename}/"
+            cache_data["nvidia_supported"] = urllib.request.urlopen(nv_url, timeout=3).getcode() == 200
+            cache_data["last_check"] = now
+            with open(REPO_CACHE_FILE, 'w') as f: json.dump(cache_data, f)
+        except Exception: pass
+    return cache_data
+
 class DarksideWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.set_title("Welcome to Darkside")
         self.set_default_size(1200, 850)
+        self.set_icon_name("welcome-to-darkside")
         os.makedirs(USER_CONFIG_DIR, exist_ok=True)
         self.is_task_running = False
         self.is_initializing_ui = True 
         self.child_switches = []
         self.theme_btns = []
+        
+        self.gpu_name = get_gpu_name()
+        self.is_nvidia = "NVIDIA" in self.gpu_name.upper()
+        self.is_nvidia_5000 = "RTX 5" in self.gpu_name.upper()
 
         self.main_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.set_content(self.main_stack)
@@ -110,13 +143,13 @@ class DarksideWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.view_stack = Adw.ViewStack()
         
-        # --- 1: STATUS ---
+        # --- TAB 1: STATUS ---
         page1 = Adw.PreferencesPage()
         info_grp = Adw.PreferencesGroup(title="System Information")
         info_grp.add(Adw.ActionRow(title="Operating System", subtitle="Ubuntu 26.04+ Core"))
         info_grp.add(Adw.ActionRow(title="Active Kernel", subtitle=platform.release()))
         info_grp.add(Adw.ActionRow(title="Processor (CPU)", subtitle=get_cpu_name()))
-        info_grp.add(Adw.ActionRow(title="Graphics (GPU)", subtitle=get_gpu_name()))
+        info_grp.add(Adw.ActionRow(title="Graphics (GPU)", subtitle=self.gpu_name))
         info_grp.add(Adw.ActionRow(title="Display Server", subtitle=get_display_server()))
         page1.add(info_grp)
         
@@ -149,11 +182,90 @@ class DarksideWindow(Adw.ApplicationWindow):
         page1.add(tweak_grp)
         self.view_stack.add_titled_with_icon(page1, "status", "Status", "computer-symbolic")
 
-        # --- 2: KERNEL ---
+        # --- TAB 2: DRIVERS & FIXES ---
+        page_drv = Adw.PreferencesPage()
+        
+        drv_grp = Adw.PreferencesGroup(title="Graphics Driver Hub", description=f"Detected: {self.gpu_name}")
+        
+        if self.is_nvidia:
+            if self.is_nvidia_5000:
+                cur_ver = get_installed_nvidia_version()
+                title = "Install NVIDIA 595 Open Drivers"
+                if cur_ver:
+                    sub = f"Currently Installed: v{cur_ver} [APT]"
+                else:
+                    sub = "Required for 5000 series GPUs on Linux. Bypasses Ubuntu repos. [PPA]"
+                row = Adw.ActionRow(title=title, subtitle=sub)
+                
+                if cur_ver and cur_ver.startswith("595"):
+                    btn = Gtk.Button(label="Installed", valign=Gtk.Align.CENTER)
+                    btn.set_sensitive(False)
+                else:
+                    btn = Gtk.Button(label="Update" if cur_ver else "Install", valign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill"])
+                    btn.connect("clicked", lambda b: self.run_sw(b, "install_nvidia_5000", None, None))
+                row.add_suffix(btn)
+                drv_grp.add(row)
+            else:
+                for title, sub, job, cls in [
+                    ("Install NVIDIA Proprietary (Latest)", "Recommended for gaming and encoding (Pre-5000 series). [PPA]", "install_nvidia_prop", "suggested-action"),
+                    ("Install NVIDIA Open (Latest)", "Open-source kernel modules. [PPA]", "install_nvidia_open", "")
+                ]:
+                    row = Adw.ActionRow(title=title, subtitle=sub)
+                    btn = Gtk.Button(label="Install", valign=Gtk.Align.CENTER, css_classes=[cls, "pill"] if cls else ["pill"])
+                    btn.connect("clicked", lambda b, j=job: self.run_sw(b, j, None, None))
+                    row.add_suffix(btn)
+                    drv_grp.add(row)
+        else:
+            kisak_row = Adw.ActionRow(title="Update Mesa Gaming Drivers (Kisak)", subtitle="Pulls the absolute latest open-source gaming drivers. [PPA]")
+            self.kisak_btn = Gtk.Button(label="Checking repo cache...", valign=Gtk.Align.CENTER, css_classes=["pill"])
+            self.kisak_btn.set_sensitive(False)
+            self.kisak_btn.connect("clicked", lambda b: self.run_sw(b, "install_kisak", None, None))
+            kisak_row.add_suffix(self.kisak_btn)
+            drv_grp.add(kisak_row)
+            threading.Thread(target=self._verify_repo_support).start()
+
+            rocm_row = Adw.ActionRow(title="Install AMD ROCm Compute", subtitle="Required for DaVinci Resolve and AI rendering. [APT]")
+            rocm_btn = Gtk.Button(label="Install", valign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill"])
+            rocm_btn.connect("clicked", lambda b: self.run_sw(b, "install_rocm", None, None))
+            rocm_row.add_suffix(rocm_btn)
+            drv_grp.add(rocm_row)
+
+        page_drv.add(drv_grp)
+
+        nv_fix = Adw.PreferencesGroup(title="NVIDIA Troubleshooting")
+        for title, sub, job in [
+            ("Fix Suspend/Resume Black Screen", "Applies NVreg memory allocations.", "fix_nvidia_suspend"),
+            ("Fix G-Sync/VRR Flickering", "Forces proper DRM modesetting.", "fix_nvidia_flicker"),
+            ("Fix Wayland Black Screens", "Forces X11 fallback in GDM3 display manager.", "fix_wayland"),
+            ("Purge Conflicting Drivers", "Fixes broken sessions after bad updates.", "fix_nvidia_conflict")
+        ]:
+            nv_fix.add(self.create_maintenance_group_row(title, sub, job, True))
+        page_drv.add(nv_fix)
+
+        amd_fix = Adw.PreferencesGroup(title="AMD Troubleshooting")
+        for title, sub, job in [
+            ("Fix System Freezes and Hangs", "Applies amdgpu.noretry=0.", "fix_amd_freeze"),
+            ("Fix Performance Stutter", "Disables unstable power management.", "fix_amd_performance"),
+            ("Fix ROCm Discovery Issues", "Forces udev rules and group permissions.", "fix_rocm_discovery")
+        ]:
+            amd_fix.add(self.create_maintenance_group_row(title, sub, job, True))
+        page_drv.add(amd_fix)
+
+        int_fix = Adw.PreferencesGroup(title="Intel Troubleshooting")
+        for title, sub, job in [
+            ("Fix Rendering Artifacts", "Disables i915 Panel Self Refresh (PSR).", "fix_intel_artifacts"),
+            ("Fix High Idle Power Consumption", "Enables FBC and GuC power saving.", "fix_intel_power")
+        ]:
+            int_fix.add(self.create_maintenance_group_row(title, sub, job, True))
+        page_drv.add(int_fix)
+
+        self.view_stack.add_titled_with_icon(page_drv, "drivers", "Drivers", "video-display-symbolic")
+
+        # --- TAB 3: KERNEL ---
         page_kernel = Adw.PreferencesPage()
         
         tkg_group = Adw.PreferencesGroup(title="TKG Custom Kernel Builder")
-        tkg_row = Adw.ActionRow(title="Build and Install TKG Kernel", subtitle="Auto-injects BORE scheduler and 1000Hz timer.")
+        tkg_row = Adw.ActionRow(title="Build and Install TKG Kernel", subtitle="Auto-injects BORE scheduler and 1000Hz timer. [Script]")
         tkg_btn = Gtk.Button(label="Build Kernel", valign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill"])
         tkg_btn.connect("clicked", self.run_kernel_job, "build_tkg")
         tkg_row.add_suffix(tkg_btn)
@@ -161,7 +273,7 @@ class DarksideWindow(Adw.ApplicationWindow):
         page_kernel.add(tkg_group)
 
         precomp_group = Adw.PreferencesGroup(title="Pre-Compiled Gaming Kernels")
-        for title, sub, job in [("Install XanMod Edge Kernel", "Optimized for heavy desktop workloads.", "install_xanmod"), ("Install Liquorix Kernel", "Aggressive Zen interactivity scheduler.", "install_liquorix")]:
+        for title, sub, job in [("Install XanMod Edge Kernel", "Optimized for heavy desktop workloads. [APT Repo]", "install_xanmod"), ("Install Liquorix Kernel", "Aggressive Zen interactivity scheduler. [APT Repo]", "install_liquorix")]:
             row = Adw.ActionRow(title=title, subtitle=sub)
             btn = Gtk.Button(label="Install", valign=Gtk.Align.CENTER, css_classes=["pill"])
             btn.connect("clicked", self.run_kernel_job, job)
@@ -170,7 +282,7 @@ class DarksideWindow(Adw.ApplicationWindow):
         page_kernel.add(precomp_group)
 
         grub_group = Adw.PreferencesGroup(title="Bootloader Configuration")
-        for title, sub, job in [("Update GRUB", "Scans for new kernels.", "update_grub"), ("Show Boot Menu", "Displays the GRUB menu.", "show_grub"), ("Hide Boot Menu", "Silent Fast Boot.", "hide_grub")]:
+        for title, sub, job in [("Update GRUB", "Scans for new kernels.", "update_grub"), ("Show Boot Menu", "Displays the GRUB menu.", "show_grub"), ("Hide Boot Menu", "Silent Fast Boot.", "hide_grub"), ("Fix Boot Delay and Recordfail", "Bypasses the 30-second GRUB timeout bug.", "fix_grub_delay")]:
             row = Adw.ActionRow(title=title, subtitle=sub)
             btn = Gtk.Button(label="Run", valign=Gtk.Align.CENTER, css_classes=["pill"])
             btn.connect("clicked", self.run_maintenance_job, job, True)
@@ -179,17 +291,17 @@ class DarksideWindow(Adw.ApplicationWindow):
         page_kernel.add(grub_group)
         
         kernel_maint_group = Adw.PreferencesGroup(title="Kernel Maintenance")
-        for title, sub, job in [("Rebuild Kernel Modules (DKMS)", "Fixes NVIDIA or Wi-Fi drivers.", "rebuild_dkms"), ("Regenerate Initramfs (Dracut)", "Rebuilds Dracut images.", "update_initramfs"), ("Remove Old Kernels", "Purges outdated kernels.", "remove_kernels")]:
+        for title, sub, job in [("Rebuild Kernel Modules (DKMS)", "Fixes NVIDIA or Wi-Fi drivers.", "rebuild_dkms"), ("Regenerate Initramfs", "Rebuilds boot images natively for Ubuntu.", "update_initramfs"), ("Remove Old Kernels", "Purges outdated kernels to free space.", "remove_kernels")]:
             kernel_maint_group.add(self.create_maintenance_group_row(title, sub, job, True))
         page_kernel.add(kernel_maint_group)
 
         self.view_stack.add_titled_with_icon(page_kernel, "kernel", "Kernel", "applications-engineering-symbolic")
 
-        # --- 3: MAINTENANCE ---
+        # --- TAB 4: MAINTENANCE ---
         page_maint = Adw.PreferencesPage()
         
         sys_maint_group = Adw.PreferencesGroup(title="System Fixes")
-        for title, sub, job in [("Fix Broken Packages", "Repairs installations.", "fix_broken"), ("Fix Update Errors", "Clears corrupted apt lists.", "fix_updates"), ("Restart Network Services", "Fixes dropped Wi-Fi.", "fix_network"), ("Fix NVIDIA Black Screens", "Forces X11 fallback.", "fix_wayland"), ("Clean Package Cache", "Frees disk space.", "clean_cache")]:
+        for title, sub, job in [("Fix Broken Packages", "Repairs installations.", "fix_broken"), ("Fix Update Errors", "Clears corrupted apt lists.", "fix_updates"), ("Fix Windows Dual-Boot Time", "Synchronizes Linux hardware clock with Windows.", "fix_time_sync"), ("Fix Bluetooth Not Connecting", "Unblocks rfkill and restarts Bluetooth service.", "fix_bluetooth"), ("Restart Network Services", "Fixes dropped Wi-Fi.", "fix_network"), ("Update Hardware Database", "Fetches latest PCI IDs for new GPUs.", "update_pciids"), ("Clean Package Cache", "Frees disk space.", "clean_cache")]:
             sys_maint_group.add(self.create_maintenance_group_row(title, sub, job, True))
         page_maint.add(sys_maint_group)
 
@@ -213,170 +325,170 @@ class DarksideWindow(Adw.ApplicationWindow):
         # --- MASSIVE SOFTWARE HUB GENERATOR ---
         categories = [
             ("Bundles", "Macro Bundles", "applications-science-symbolic", [
-                ("OBS Studio Ultimate Stack", "Installs Flatpak and 8 plugins", "obs_ultimate", None, "com.obsproject.Studio"),
-                ("Virtual Desktop Combo", "Docker, FreeRDP, Winboat", "virt_desktop_combo", "docker", None),
-                ("Virt-Manager Setup", "KVM/QEMU setup", "virt_manager", "virt-manager", None),
-                ("LAMP Stack Developer", "Apache, MySQL, PHP", "install_lamp", "apache2", None),
-                ("Ultimate Emulation Pack", "RetroArch, PCSX2, RPCS3, Dolphin", "install_emulators", None, "org.libretro.RetroArch"),
-                ("Game Dev Essentials", "Godot, Blender, Krita", "install_gamedev", None, "org.godotengine.Godot"),
-                ("Streaming Setup", "OBS, Audacity, EasyEffects", "install_streaming", "easyeffects", None)
+                ("OBS Studio Ultimate Stack", "Installs Flatpak and 8 plugins [Flatpak]", "obs_ultimate", None, "com.obsproject.Studio"),
+                ("Virtual Desktop Combo", "Docker, FreeRDP, Winboat [APT/Flatpak]", "virt_desktop_combo", "docker", None),
+                ("Virt-Manager Setup", "KVM/QEMU setup [APT]", "virt_manager", "virt-manager", None),
+                ("LAMP Stack Developer", "Apache, MySQL, PHP [APT]", "install_lamp", "apache2", None),
+                ("Ultimate Emulation Pack", "RetroArch, PCSX2, RPCS3, Dolphin [Flatpak]", "install_emulators", None, "org.libretro.RetroArch"),
+                ("Game Dev Essentials", "Godot, Blender, Krita [Flatpak]", "install_gamedev", None, "org.godotengine.Godot"),
+                ("Streaming Setup", "OBS, Audacity, EasyEffects [Flatpak]", "install_streaming", "easyeffects", None)
             ]),
             ("Browsers", "Web Browsers", "network-wired-symbolic", [
-                ("Google Chrome", "Proprietary binary", "install_chrome", "google-chrome", None),
-                ("Microsoft Edge", "Proprietary binary", "install_edge", "microsoft-edge", None),
-                ("Brave", "Privacy focused", "install_brave", "brave-browser", None),
-                ("Vivaldi", "Highly customizable", "vivaldi-stable", "vivaldi", None),
-                ("Opera", "With built-in VPN", "opera-stable", "opera", None),
-                ("Firefox", "Flatpak edition", "fp:org.mozilla.firefox", None, "org.mozilla.firefox"),
-                ("Zen Browser", "Minimalist browser", "fp:io.github.zen_browser.zen", None, "io.github.zen_browser.zen"),
-                ("Chromium", "Open source base", "fp:org.chromium.Chromium", None, "org.chromium.Chromium"),
-                ("Ungoogled Chromium", "Chromium without Google", "fp:io.github.ungoogled_software.ungoogled_chromium", None, "io.github.ungoogled_software.ungoogled_chromium"),
-                ("Waterfox", "Privacy browser", "fp:net.waterfox.waterfox", None, "net.waterfox.waterfox"),
-                ("LibreWolf", "Hardened Firefox", "fp:io.gitlab.librewolf-community", None, "io.gitlab.librewolf-community"),
-                ("Floorp", "Japanese Firefox fork", "fp:ablaze.floorp.Floorp", None, "ablaze.floorp.Floorp"),
-                ("Mullvad Browser", "Anti-tracking", "fp:net.mullvad.MullvadBrowser", None, "net.mullvad.MullvadBrowser"),
-                ("DuckDuckGo", "Privacy browser", "fp:com.duckduckgo.Desktop", None, "com.duckduckgo.Desktop"),
-                ("Epiphany", "GNOME Web", "epiphany-browser", "epiphany-browser", None),
-                ("Falkon", "KDE Browser", "falkon", "falkon", None),
-                ("Pale Moon", "Independent engine", "fp:org.palemoon.PaleMoon", None, "org.palemoon.PaleMoon"),
-                ("Tor Browser", "Dark-web access", "fp:com.github.micahflee.torbrowser-launcher", None, "com.github.micahflee.torbrowser-launcher"),
-                ("Thorium", "AVX2 Optimized Chrome", "install_thorium", "thorium-browser", None)
+                ("Google Chrome", "Proprietary browser [.deb]", "install_chrome", "google-chrome", None),
+                ("Microsoft Edge", "Proprietary browser [.deb]", "install_edge", "microsoft-edge", None),
+                ("Brave", "Privacy focused [APT Repo]", "install_brave", "brave-browser", None),
+                ("Vivaldi", "Highly customizable [APT]", "vivaldi-stable", "vivaldi", None),
+                ("Opera", "With built-in VPN [APT]", "opera-stable", "opera", None),
+                ("Firefox", "Official Flatpak edition [Flatpak]", "fp:org.mozilla.firefox", None, "org.mozilla.firefox"),
+                ("Zen Browser", "Minimalist browser [Flatpak]", "fp:io.github.zen_browser.zen", None, "io.github.zen_browser.zen"),
+                ("Chromium", "Open source base [Flatpak]", "fp:org.chromium.Chromium", None, "org.chromium.Chromium"),
+                ("Ungoogled Chromium", "Chromium without Google [Flatpak]", "fp:io.github.ungoogled_software.ungoogled_chromium", None, "io.github.ungoogled_software.ungoogled_chromium"),
+                ("Waterfox", "Privacy browser [Flatpak]", "fp:net.waterfox.waterfox", None, "net.waterfox.waterfox"),
+                ("LibreWolf", "Hardened Firefox [Flatpak]", "fp:io.gitlab.librewolf-community", None, "io.gitlab.librewolf-community"),
+                ("Floorp", "Japanese Firefox fork [Flatpak]", "fp:ablaze.floorp.Floorp", None, "ablaze.floorp.Floorp"),
+                ("Mullvad Browser", "Anti-tracking [Flatpak]", "fp:net.mullvad.MullvadBrowser", None, "net.mullvad.MullvadBrowser"),
+                ("DuckDuckGo", "Privacy browser [Flatpak]", "fp:com.duckduckgo.Desktop", None, "com.duckduckgo.Desktop"),
+                ("Epiphany", "GNOME Web [APT]", "epiphany-browser", "epiphany-browser", None),
+                ("Falkon", "KDE Browser [APT]", "falkon", "falkon", None),
+                ("Pale Moon", "Independent engine [Flatpak]", "fp:org.palemoon.PaleMoon", None, "org.palemoon.PaleMoon"),
+                ("Tor Browser", "Dark-web access [Flatpak]", "fp:com.github.micahflee.torbrowser-launcher", None, "com.github.micahflee.torbrowser-launcher"),
+                ("Thorium", "AVX2 Optimized Chrome [.deb]", "install_thorium", "thorium-browser", None)
             ]),
             ("Gaming", "Gaming and Emulation", "input-gaming-symbolic", [
-                ("Steam", "Essential Client", "install_steam", "steam", None),
-                ("Lutris", "Game Manager", "lutris", "lutris", None),
-                ("Heroic", "Epic and GOG", "fp:com.heroicgameslauncher.hgl", None, "com.heroicgameslauncher.hgl"),
-                ("Bottles", "Windows Environments", "fp:com.usebottles.bottles", None, "com.usebottles.bottles"),
-                ("Cartridges", "Unified Library", "fp:hu.irl.Cartridges", None, "hu.irl.Cartridges"),
-                ("ProtonPlus", "Proton Manager", "fp:com.vysp3r.ProtonPlus", None, "com.vysp3r.ProtonPlus"),
-                ("ProtonUp-Qt", "Custom Proton", "fp:net.davidotek.pupgui2", None, "net.davidotek.pupgui2"),
-                ("MangoHud", "Vulkan Overlay", "mangohud", "mangohud", None),
-                ("GOverlay", "MangoHud UI", "goverlay", "goverlay", None),
-                ("Gamemode", "Feral Optimization", "gamemode", "gamemoded", None),
-                ("Gamescope", "Micro-compositor", "gamescope", "gamescope", None),
-                ("Protontricks", "Winetricks for Proton", "protontricks", "protontricks", None),
-                ("Wine", "Compatibility layer", "wine", "wine", None),
-                ("Winetricks", "Wine utility", "winetricks", "winetricks", None),
-                ("Prism Launcher", "Minecraft Hub", "fp:org.prismlauncher.PrismLauncher", None, "org.prismlauncher.PrismLauncher"),
-                ("Minecraft", "Official Launcher", "fp:com.mojang.Minecraft", None, "com.mojang.Minecraft"),
-                ("Minigalaxy", "Native GOG Client", "fp:io.github.wouterfassm.Minigalaxy", None, "io.github.wouterfassm.Minigalaxy"),
-                ("Ludusavi", "Save Backup Tool", "fp:com.github.mtkennerly.ludusavi", None, "com.github.mtkennerly.ludusavi"),
-                ("PCSX2", "PS2 Emulator", "fp:net.pcsx2.PCSX2", None, "net.pcsx2.PCSX2"),
-                ("RPCS3", "PS3 Emulator", "fp:net.rpcs3.RPCS3", None, "net.rpcs3.RPCS3"),
-                ("RetroArch", "Multi-system Emulator", "fp:org.libretro.RetroArch", None, "org.libretro.RetroArch"),
-                ("RuneLite", "OSRS Client", "fp:net.runelite.RuneLite", None, "net.runelite.RuneLite"),
-                ("Vesktop", "Gaming Discord", "fp:dev.vencord.Vesktop", None, "dev.vencord.Vesktop")
+                ("Steam", "Essential Client [APT]", "install_steam", "steam", None),
+                ("Lutris", "Game Manager [APT]", "lutris", "lutris", None),
+                ("Heroic", "Epic and GOG [Flatpak]", "fp:com.heroicgameslauncher.hgl", None, "com.heroicgameslauncher.hgl"),
+                ("Bottles", "Windows Environments [Flatpak]", "fp:com.usebottles.bottles", None, "com.usebottles.bottles"),
+                ("Cartridges", "Unified Library [Flatpak]", "fp:hu.irl.Cartridges", None, "hu.irl.Cartridges"),
+                ("ProtonPlus", "Proton Manager [Flatpak]", "fp:com.vysp3r.ProtonPlus", None, "com.vysp3r.ProtonPlus"),
+                ("ProtonUp-Qt", "Custom Proton [Flatpak]", "fp:net.davidotek.pupgui2", None, "net.davidotek.pupgui2"),
+                ("MangoHud", "Vulkan Overlay [APT]", "mangohud", "mangohud", None),
+                ("GOverlay", "MangoHud UI [APT]", "goverlay", "goverlay", None),
+                ("Gamemode", "Feral Optimization [APT]", "gamemode", "gamemoded", None),
+                ("Gamescope", "Micro-compositor [APT]", "gamescope", "gamescope", None),
+                ("Protontricks", "Winetricks for Proton [APT]", "protontricks", "protontricks", None),
+                ("Wine", "Compatibility layer [APT]", "wine", "wine", None),
+                ("Winetricks", "Wine utility [APT]", "winetricks", "winetricks", None),
+                ("Prism Launcher", "Minecraft Hub [Flatpak]", "fp:org.prismlauncher.PrismLauncher", None, "org.prismlauncher.PrismLauncher"),
+                ("Minecraft", "Official Launcher [Flatpak]", "fp:com.mojang.Minecraft", None, "com.mojang.Minecraft"),
+                ("Minigalaxy", "Native GOG Client [Flatpak]", "fp:io.github.wouterfassm.Minigalaxy", None, "io.github.wouterfassm.Minigalaxy"),
+                ("Ludusavi", "Save Backup Tool [Flatpak]", "fp:com.github.mtkennerly.ludusavi", None, "com.github.mtkennerly.ludusavi"),
+                ("PCSX2", "PS2 Emulator [Flatpak]", "fp:net.pcsx2.PCSX2", None, "net.pcsx2.PCSX2"),
+                ("RPCS3", "PS3 Emulator [Flatpak]", "fp:net.rpcs3.RPCS3", None, "net.rpcs3.RPCS3"),
+                ("RetroArch", "Multi-system Emulator [Flatpak]", "fp:org.libretro.RetroArch", None, "org.libretro.RetroArch"),
+                ("RuneLite", "OSRS Client [Flatpak]", "fp:net.runelite.RuneLite", None, "net.runelite.RuneLite"),
+                ("Vesktop", "Gaming Discord [Flatpak]", "fp:dev.vencord.Vesktop", None, "dev.vencord.Vesktop")
             ]),
             ("Creative", "Content Creation", "camera-video-symbolic", [
-                ("Blender", "3D creation", "blender", "blender", None),
-                ("Kdenlive", "Video editor", "fp:org.kde.kdenlive", "kdenlive", "org.kde.kdenlive"),
-                ("OpenShot", "Simple video editor", "openshot", "openshot", None),
-                ("GIMP", "Image editor", "fp:org.gimp.GIMP", "gimp", "org.gimp.GIMP"),
-                ("Krita", "Digital painting", "fp:org.kde.krita", "krita", "org.kde.krita"),
-                ("Darktable", "RAW photo editor", "darktable", "darktable", None),
-                ("Inkscape", "Vector graphics", "inkscape", "inkscape", None),
-                ("FreeCAD", "Open Source CAD", "fp:org.freecadweb.FreeCAD", None, "org.freecadweb.FreeCAD"),
-                ("Sweet Home 3D", "Interior Design", "sweethome3d", "sweethome3d", None),
-                ("Godot Engine", "Game development", "fp:org.godotengine.Godot", None, "org.godotengine.Godot"),
-                ("Natron", "Node compositing", "fp:fr.natron.Natron", None, "fr.natron.Natron"),
-                ("Synfig Studio", "2D Animation", "fp:org.synfig.SynfigStudio", None, "org.synfig.SynfigStudio"),
-                ("Pinta", "Simple drawing", "fp:org.pinta_project.Pinta", None, "org.pinta_project.Pinta"),
-                ("Upscayl", "AI Upscaler", "fp:org.upscayl.Upscayl", None, "org.upscayl.Upscayl"),
-                ("Audacity", "Audio editor", "audacity", "audacity", None),
-                ("Tenacity", "Audacity fork", "fp:org.tenacityaudio.Tenacity", None, "org.tenacityaudio.Tenacity"),
-                ("Ardour", "Professional DAW", "ardour", "ardour", None),
-                ("LMMS", "Music production", "lmms", "lmms", None),
-                ("Rosegarden", "MIDI sequencer", "rosegarden", "rosegarden", None),
-                ("Pavucontrol", "Audio mixer", "pavucontrol", "pavucontrol", None),
-                ("EasyEffects", "Audio effects", "easyeffects", "easyeffects", None),
-                ("Handbrake", "Video transcoder", "fp:fr.handbrake.ghb", "handbrake", "fr.handbrake.ghb"),
-                ("Pitivi", "Video Editor", "pitivi", "pitivi", None),
-                ("Scribus", "Desktop Publishing", "scribus", "scribus", None),
-                ("Figma (Unofficial)", "Design Tool", "fp:io.github.Figma_Linux.figma_linux", None, "io.github.Figma_Linux.figma_linux")
+                ("Blender", "3D creation [APT]", "blender", "blender", None),
+                ("Kdenlive", "Video editor [Flatpak]", "fp:org.kde.kdenlive", "kdenlive", "org.kde.kdenlive"),
+                ("OpenShot", "Simple video editor [APT]", "openshot", "openshot", None),
+                ("GIMP", "Image editor [Flatpak]", "fp:org.gimp.GIMP", "gimp", "org.gimp.GIMP"),
+                ("Krita", "Digital painting [Flatpak]", "fp:org.kde.krita", "krita", "org.kde.krita"),
+                ("Darktable", "RAW photo editor [APT]", "darktable", "darktable", None),
+                ("Inkscape", "Vector graphics [APT]", "inkscape", "inkscape", None),
+                ("FreeCAD", "Open Source CAD [Flatpak]", "fp:org.freecadweb.FreeCAD", None, "org.freecadweb.FreeCAD"),
+                ("Sweet Home 3D", "Interior Design [APT]", "sweethome3d", "sweethome3d", None),
+                ("Godot Engine", "Game development [Flatpak]", "fp:org.godotengine.Godot", None, "org.godotengine.Godot"),
+                ("Natron", "Node compositing [Flatpak]", "fp:fr.natron.Natron", None, "fr.natron.Natron"),
+                ("Synfig Studio", "2D Animation [Flatpak]", "fp:org.synfig.SynfigStudio", None, "org.synfig.SynfigStudio"),
+                ("Pinta", "Simple drawing [Flatpak]", "fp:org.pinta_project.Pinta", None, "org.pinta_project.Pinta"),
+                ("Upscayl", "AI Upscaler [Flatpak]", "fp:org.upscayl.Upscayl", None, "org.upscayl.Upscayl"),
+                ("Audacity", "Audio editor [APT]", "audacity", "audacity", None),
+                ("Tenacity", "Audacity fork [Flatpak]", "fp:org.tenacityaudio.Tenacity", None, "org.tenacityaudio.Tenacity"),
+                ("Ardour", "Professional DAW [APT]", "ardour", "ardour", None),
+                ("LMMS", "Music production [APT]", "lmms", "lmms", None),
+                ("Rosegarden", "MIDI sequencer [APT]", "rosegarden", "rosegarden", None),
+                ("Pavucontrol", "Audio mixer [APT]", "pavucontrol", "pavucontrol", None),
+                ("EasyEffects", "Audio effects [APT]", "easyeffects", "easyeffects", None),
+                ("Handbrake", "Video transcoder [Flatpak]", "fp:fr.handbrake.ghb", "handbrake", "fr.handbrake.ghb"),
+                ("Pitivi", "Video Editor [APT]", "pitivi", "pitivi", None),
+                ("Scribus", "Desktop Publishing [APT]", "scribus", "scribus", None),
+                ("Figma (Unofficial)", "Design Tool [Flatpak]", "fp:io.github.Figma_Linux.figma_linux", None, "io.github.Figma_Linux.figma_linux")
             ]),
             ("Office", "Office and Comms", "mail-send-symbolic", [
-                ("LibreOffice", "Office Suite", "libreoffice", "libreoffice", None),
-                ("OnlyOffice", "Modern Office", "fp:org.onlyoffice.desktopeditors", None, "org.onlyoffice.desktopeditors"),
-                ("WPS Office", "Office compatibility", "fp:com.wps.Office", None, "com.wps.Office"),
-                ("Obsidian", "Markdown Notes", "fp:md.obsidian.Obsidian", None, "md.obsidian.Obsidian"),
-                ("Joplin", "Syncable Notes", "joplin", "joplin", None),
-                ("Discord", "Voice Chat", "fp:com.discordapp.Discord", None, "com.discordapp.Discord"),
-                ("Thunderbird", "Email Client", "fp:org.mozilla.Thunderbird", "thunderbird", "org.mozilla.Thunderbird"),
-                ("BlueMail", "Email Client", "fp:me.bluemail.BlueMail", None, "me.bluemail.BlueMail"),
-                ("Mailspring", "Email Client", "fp:com.getmailspring.Mailspring", None, "com.getmailspring.Mailspring"),
-                ("Teams for Linux", "Microsoft Teams", "fp:com.github.IsmaelMartinez.teams_for_linux", None, "com.github.IsmaelMartinez.teams_for_linux"),
-                ("Zoom", "Video Conferencing", "fp:us.zoom.Zoom", None, "us.zoom.Zoom"),
-                ("Telegram", "Secure Messaging", "fp:org.telegram.desktop", None, "org.telegram.desktop"),
-                ("Signal", "Secure Messaging", "fp:org.signal.Signal", None, "org.signal.Signal"),
-                ("Slack", "Team Comms", "fp:com.slack.Slack", None, "com.slack.Slack"),
-                ("Element", "Matrix Client", "fp:im.riot.Riot", None, "im.riot.Riot"),
-                ("Evince", "GNOME PDF", "evince", "evince", None),
-                ("Papers", "Modern PDF", "papers", "papers", None),
-                ("Okular", "KDE PDF", "okular", "okular", None),
-                ("Foliate", "E-Book Reader", "fp:com.github.johnfactotum.Foliate", None, "com.github.johnfactotum.Foliate"),
-                ("PDFArranger", "PDF utility", "pdfarranger", "pdfarranger", None),
-                ("Simple-scan", "GNOME Scan", "simple-scan", "simple-scan", None),
-                ("Skanlite", "KDE Scan", "skanlite", "skanlite", None),
-                ("GNOME Contacts", "Contacts", "gnome-contacts", "gnome-contacts", None),
-                ("GNOME Calendar", "Calendar", "gnome-calendar", "gnome-calendar", None),
-                ("KDE Connect", "Phone sync", "kdeconnect", "kdeconnect-cli", None)
+                ("LibreOffice", "Office Suite [APT]", "libreoffice", "libreoffice", None),
+                ("OnlyOffice", "Modern Office [Flatpak]", "fp:org.onlyoffice.desktopeditors", None, "org.onlyoffice.desktopeditors"),
+                ("WPS Office", "Office compatibility [Flatpak]", "fp:com.wps.Office", None, "com.wps.Office"),
+                ("Obsidian", "Markdown Notes [Flatpak]", "fp:md.obsidian.Obsidian", None, "md.obsidian.Obsidian"),
+                ("Joplin", "Syncable Notes [APT]", "joplin", "joplin", None),
+                ("Discord", "Voice Chat [Flatpak]", "fp:com.discordapp.Discord", None, "com.discordapp.Discord"),
+                ("Thunderbird", "Email Client [Flatpak]", "fp:org.mozilla.Thunderbird", "thunderbird", "org.mozilla.Thunderbird"),
+                ("BlueMail", "Email Client [Flatpak]", "fp:me.bluemail.BlueMail", None, "me.bluemail.BlueMail"),
+                ("Mailspring", "Email Client [Flatpak]", "fp:com.getmailspring.Mailspring", None, "com.getmailspring.Mailspring"),
+                ("Teams for Linux", "Microsoft Teams [Flatpak]", "fp:com.github.IsmaelMartinez.teams_for_linux", None, "com.github.IsmaelMartinez.teams_for_linux"),
+                ("Zoom", "Video Conferencing [Flatpak]", "fp:us.zoom.Zoom", None, "us.zoom.Zoom"),
+                ("Telegram", "Secure Messaging [Flatpak]", "fp:org.telegram.desktop", None, "org.telegram.desktop"),
+                ("Signal", "Secure Messaging [Flatpak]", "fp:org.signal.Signal", None, "org.signal.Signal"),
+                ("Slack", "Team Comms [Flatpak]", "fp:com.slack.Slack", None, "com.slack.Slack"),
+                ("Element", "Matrix Client [Flatpak]", "fp:im.riot.Riot", None, "im.riot.Riot"),
+                ("Evince", "GNOME PDF [APT]", "evince", "evince", None),
+                ("Papers", "Modern PDF [APT]", "papers", "papers", None),
+                ("Okular", "KDE PDF [APT]", "okular", "okular", None),
+                ("Foliate", "E-Book Reader [Flatpak]", "fp:com.github.johnfactotum.Foliate", None, "com.github.johnfactotum.Foliate"),
+                ("PDFArranger", "PDF utility [APT]", "pdfarranger", "pdfarranger", None),
+                ("Simple-scan", "GNOME Scan [APT]", "simple-scan", "simple-scan", None),
+                ("Skanlite", "KDE Scan [APT]", "skanlite", "skanlite", None),
+                ("GNOME Contacts", "Contacts [APT]", "gnome-contacts", "gnome-contacts", None),
+                ("GNOME Calendar", "Calendar [APT]", "gnome-calendar", "gnome-calendar", None),
+                ("KDE Connect", "Phone sync [APT]", "kdeconnect", "kdeconnect-cli", None)
             ]),
             ("Media", "Media and Streaming", "multimedia-player-symbolic", [
-                ("VLC", "Universal player", "vlc", "vlc", None),
-                ("MPV", "Minimalist player", "mpv", "mpv", None),
-                ("Celluloid", "GTK Media Player", "celluloid", "celluloid", None),
-                ("SMPlayer", "Advanced MPlayer GUI", "smplayer", "smplayer", None),
-                ("Haruna", "KDE Video Player", "haruna", "haruna", None),
-                ("Showtime", "GNOME Video Player", "showtime", "showtime", None),
-                ("FreeTube", "Private YouTube client", "fp:io.freetubeapp.FreeTube", None, "io.freetubeapp.FreeTube"),
-                ("Spotify", "Music Streaming", "fp:com.spotify.Client", None, "com.spotify.Client"),
-                ("Audacious", "Lightweight Audio Player", "audacious", "audacious", None),
-                ("Amberol", "Simple Music Player", "fp:io.bassi.Amberol", None, "io.bassi.Amberol"),
-                ("Cider", "Apple Music Client", "fp:sh.cider.Cider", None, "sh.cider.Cider"),
-                ("Strawberry", "Audiophile player", "strawberry", "strawberry", None),
-                ("Clementine", "Music player", "clementine", "clementine", None),
-                ("Lollypop", "GNOME Music", "lollypop", "lollypop", None),
-                ("Rhythmbox", "Classic Music", "rhythmbox", "rhythmbox", None),
-                ("Elisa", "KDE Music", "elisa", "elisa", None),
-                ("GNOME Music", "GNOME Audio", "gnome-music", "gnome-music", None),
-                ("Shortwave", "Internet Radio", "fp:de.haeckerfelix.Shortwave", None, "de.haeckerfelix.Shortwave"),
-                ("Pocket Casts", "Podcasts", "fp:com.github.fabiocollet.pocketcasts", None, "com.github.fabiocollet.pocketcasts"),
-                ("Kamoso", "Camera tool", "kamoso", "kamoso", None),
-                ("Plex", "Media Player", "fp:tv.plex.PlexDesktop", None, "tv.plex.PlexDesktop"),
-                ("Jellyfin", "Media Player", "fp:com.github.iwalton3.jellyfin-media-player", None, "com.github.iwalton3.jellyfin-media-player"),
-                ("Stremio", "Video Streaming", "fp:com.stremio.Stremio", None, "com.stremio.Stremio"),
-                ("Kodi", "Media Center", "fp:tv.kodi.Kodi", None, "tv.kodi.Kodi"),
-                ("Hypnotix", "IPTV Player", "hypnotix", "hypnotix", None),
-                ("StreamController", "Elgato alternative", "fp:com.core447.StreamController", None, "com.core447.StreamController")
+                ("VLC", "Universal player [APT]", "vlc", "vlc", None),
+                ("MPV", "Minimalist player [APT]", "mpv", "mpv", None),
+                ("Celluloid", "GTK Media Player [APT]", "celluloid", "celluloid", None),
+                ("SMPlayer", "Advanced MPlayer GUI [APT]", "smplayer", "smplayer", None),
+                ("Haruna", "KDE Video Player [APT]", "haruna", "haruna", None),
+                ("Showtime", "GNOME Video Player [APT]", "showtime", "showtime", None),
+                ("FreeTube", "Private YouTube client [Flatpak]", "fp:io.freetubeapp.FreeTube", None, "io.freetubeapp.FreeTube"),
+                ("Spotify", "Music Streaming [Flatpak]", "fp:com.spotify.Client", None, "com.spotify.Client"),
+                ("Audacious", "Lightweight Audio Player [APT]", "audacious", "audacious", None),
+                ("Amberol", "Simple Music Player [Flatpak]", "fp:io.bassi.Amberol", None, "io.bassi.Amberol"),
+                ("Cider", "Apple Music Client [Flatpak]", "fp:sh.cider.Cider", None, "sh.cider.Cider"),
+                ("Strawberry", "Audiophile player [APT]", "strawberry", "strawberry", None),
+                ("Clementine", "Music player [APT]", "clementine", "clementine", None),
+                ("Lollypop", "GNOME Music [APT]", "lollypop", "lollypop", None),
+                ("Rhythmbox", "Classic Music [APT]", "rhythmbox", "rhythmbox", None),
+                ("Elisa", "KDE Music [APT]", "elisa", "elisa", None),
+                ("GNOME Music", "GNOME Audio [APT]", "gnome-music", "gnome-music", None),
+                ("Shortwave", "Internet Radio [Flatpak]", "fp:de.haeckerfelix.Shortwave", None, "de.haeckerfelix.Shortwave"),
+                ("Pocket Casts", "Podcasts [Flatpak]", "fp:com.github.fabiocollet.pocketcasts", None, "com.github.fabiocollet.pocketcasts"),
+                ("Kamoso", "Camera tool [APT]", "kamoso", "kamoso", None),
+                ("Plex", "Media Player [Flatpak]", "fp:tv.plex.PlexDesktop", None, "tv.plex.PlexDesktop"),
+                ("Jellyfin", "Media Player [Flatpak]", "fp:com.github.iwalton3.jellyfin-media-player", None, "com.github.iwalton3.jellyfin-media-player"),
+                ("Stremio", "Video Streaming [Flatpak]", "fp:com.stremio.Stremio", None, "com.stremio.Stremio"),
+                ("Kodi", "Media Center [Flatpak]", "fp:tv.kodi.Kodi", None, "tv.kodi.Kodi"),
+                ("Hypnotix", "IPTV Player [APT]", "hypnotix", "hypnotix", None),
+                ("StreamController", "Elgato alternative [Flatpak]", "fp:com.core447.StreamController", None, "com.core447.StreamController")
             ]),
             ("Tools", "System Tools", "emblem-system-symbolic", [
-                ("Mission Center", "Windows-style Task Manager", "fp:io.missioncenter.MissionCenter", None, "io.missioncenter.MissionCenter"),
-                ("Extension Manager", "GNOME Extensions", "extension-manager", "extension-manager", None),
-                ("GNOME Tweaks", "GNOME Customization", "gnome-tweaks", "gnome-tweaks", None),
-                ("Stacer", "System Optimizer", "stacer", "stacer", None),
-                ("LACT", "Linux AMDGUI Controller", "install_lact", "lact", None),
-                ("Htop", "Interactive Process Viewer", "htop", "htop", None),
-                ("Psensor", "Temperature Monitor", "psensor", "psensor", None),
-                ("Flatseal", "Flatpak Permissions", "fp:com.github.tchx84.Flatseal", None, "com.github.tchx84.Flatseal"),
-                ("Warehouse", "Flatpak Manager", "fp:io.github.flattool.Warehouse", None, "io.github.flattool.Warehouse"),
-                ("Hidamari", "Video Wallpapers", "fp:io.github.jeffshee.Hidamari", None, "io.github.jeffshee.Hidamari"),
-                ("GtkStressTesting", "Hardware Stress", "fp:com.leinardi.gst", None, "com.leinardi.gst"),
-                ("Bitwarden", "Password Manager", "fp:com.bitwarden.desktop", None, "com.bitwarden.desktop"),
-                ("KeePassXC", "Offline Passwords", "keepassxc", "keepassxc", None),
-                ("RustDesk", "Remote Desktop", "fp:com.rustdesk.RustDesk", None, "com.rustdesk.RustDesk"),
-                ("TeamViewer", "Remote Support", "teamviewer", "teamviewer", None),
-                ("AnyDesk", "Remote Support", "anydesk", "anydesk", None),
-                ("Remmina", "RDP Client", "remmina", "remmina", None),
-                ("Timeshift", "System Backup", "timeshift", "timeshift", None),
-                ("GParted", "Partition Manager", "gparted", "gparted", None),
-                ("KDE Partition Manager", "KDE Partitions", "partitionmanager", "partitionmanager", None),
-                ("Syncthing", "File Sync", "syncthing", "syncthing", None),
-                ("BleachBit", "System Cleaner", "bleachbit", "bleachbit", None),
-                ("CPU-X", "CPU-Z Alternative", "cpu-x", "cpu-x", None),
-                ("Git", "Version Control", "git", "git", None),
-                ("7zip", "Archive Manager", "7zip", "7zz", None),
-                ("fastfetch", "System Info CLI", "fastfetch", "fastfetch", None),
-                ("Kvantum", "Qt Styling", "qt6-style-kvantum", "kvantummanager", None)
+                ("Mission Center", "Windows-style Task Manager [Flatpak]", "fp:io.missioncenter.MissionCenter", None, "io.missioncenter.MissionCenter"),
+                ("Extension Manager", "GNOME Extensions [APT]", "extension-manager", "extension-manager", None),
+                ("GNOME Tweaks", "GNOME Customization [APT]", "gnome-tweaks", "gnome-tweaks", None),
+                ("Stacer", "System Optimizer [APT]", "stacer", "stacer", None),
+                ("LACT", "Linux AMDGUI Controller [.deb]", "install_lact", "lact", None),
+                ("Htop", "Interactive Process Viewer [APT]", "htop", "htop", None),
+                ("Psensor", "Temperature Monitor [APT]", "psensor", "psensor", None),
+                ("Flatseal", "Flatpak Permissions [Flatpak]", "fp:com.github.tchx84.Flatseal", None, "com.github.tchx84.Flatseal"),
+                ("Warehouse", "Flatpak Manager [Flatpak]", "fp:io.github.flattool.Warehouse", None, "io.github.flattool.Warehouse"),
+                ("Hidamari", "Video Wallpapers [Flatpak]", "fp:io.github.jeffshee.Hidamari", None, "io.github.jeffshee.Hidamari"),
+                ("GtkStressTesting", "Hardware Stress [Flatpak]", "fp:com.leinardi.gst", None, "com.leinardi.gst"),
+                ("Bitwarden", "Password Manager [Flatpak]", "fp:com.bitwarden.desktop", None, "com.bitwarden.desktop"),
+                ("KeePassXC", "Offline Passwords [APT]", "keepassxc", "keepassxc", None),
+                ("RustDesk", "Remote Desktop [Flatpak]", "fp:com.rustdesk.RustDesk", None, "com.rustdesk.RustDesk"),
+                ("TeamViewer", "Remote Support [APT]", "teamviewer", "teamviewer", None),
+                ("AnyDesk", "Remote Support [APT]", "anydesk", "anydesk", None),
+                ("Remmina", "RDP Client [APT]", "remmina", "remmina", None),
+                ("Timeshift", "System Backup [APT]", "timeshift", "timeshift", None),
+                ("GParted", "Partition Manager [APT]", "gparted", "gparted", None),
+                ("KDE Partition Manager", "KDE Partitions [APT]", "partitionmanager", "partitionmanager", None),
+                ("Syncthing", "File Sync [APT]", "syncthing", "syncthing", None),
+                ("BleachBit", "System Cleaner [APT]", "bleachbit", "bleachbit", None),
+                ("CPU-X", "CPU-Z Alternative [APT]", "cpu-x", "cpu-x", None),
+                ("Git", "Version Control [APT]", "git", "git", None),
+                ("7zip", "Archive Manager [APT]", "7zip", "7zz", None),
+                ("fastfetch", "System Info CLI [APT]", "fastfetch", "fastfetch", None),
+                ("Kvantum", "Qt Styling [APT]", "qt6-style-kvantum", "kvantummanager", None)
             ])
         ]
 
@@ -386,15 +498,13 @@ class DarksideWindow(Adw.ApplicationWindow):
             if tab_id == "Bundles":
                 res_grp = Adw.PreferencesGroup(title="DaVinci Resolve Setup", description="3-Step automated setup and fix process.")
                 
-                # Step 1: Link
-                row1 = Adw.ActionRow(title="Step 1: Download Resolve", subtitle="Choose Free or Studio from Blackmagic.")
+                row1 = Adw.ActionRow(title="Step 1: Download Resolve", subtitle="Choose Free or Studio from Blackmagic. [Browser]")
                 link_btn = Gtk.LinkButton(uri="https://www.blackmagicdesign.com/products/davinciresolve", label="Open Website")
                 link_btn.set_valign(Gtk.Align.CENTER)
                 row1.add_suffix(link_btn)
                 res_grp.add(row1)
 
-                # Step 2: Select File
-                row2 = Adw.ActionRow(title="Step 2: Select Downloaded .zip", subtitle="Point to the file you downloaded.")
+                row2 = Adw.ActionRow(title="Step 2: Select Downloaded .zip", subtitle="Point to the file you downloaded. [Local]")
                 self.resolve_path_lbl = Gtk.Label(label="No file selected")
                 self.resolve_path_lbl.set_valign(Gtk.Align.CENTER)
                 self.resolve_path_lbl.set_margin_end(10)
@@ -406,8 +516,7 @@ class DarksideWindow(Adw.ApplicationWindow):
                 row2.add_suffix(box2)
                 res_grp.add(row2)
 
-                # Step 3: Execute
-                row3 = Adw.ActionRow(title="Step 3: Execute", subtitle="Extracts, installs, grabs ROCm, and patches libraries.")
+                row3 = Adw.ActionRow(title="Step 3: Execute", subtitle="Extracts, installs, grabs ROCm, and patches libraries. [Script]")
                 box3 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
                 install_btn = Gtk.Button(label="Install Resolve", valign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill"])
                 install_btn.connect("clicked", self.on_resolve_install)
@@ -439,7 +548,6 @@ class DarksideWindow(Adw.ApplicationWindow):
         switcher = Adw.ViewSwitcher(stack=self.view_stack, policy=Adw.ViewSwitcherPolicy.WIDE)
         header = Adw.HeaderBar(title_widget=switcher)
         
-        # The Restored Gear Icon
         menu_btn = Gtk.MenuButton(icon_name="preferences-system-symbolic")
         popover = Gtk.Popover()
         pop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5, margin_top=10, margin_bottom=10, margin_start=10, margin_end=10)
@@ -454,7 +562,6 @@ class DarksideWindow(Adw.ApplicationWindow):
             self.theme_btns.append(btn)
             theme_box.append(btn)
         
-        # Highlight current theme
         self.theme_btns[0].add_css_class("suggested-action")
         pop_box.append(theme_box)
 
@@ -473,6 +580,15 @@ class DarksideWindow(Adw.ApplicationWindow):
         self.main_stack.add_named(box, "dashboard_screen")
 
     # --- ACTION HANDLERS ---
+    def _verify_repo_support(self):
+        support_data = check_repo_support_cached()
+        if support_data.get("kisak_supported", False):
+            GLib.idle_add(lambda: self.kisak_btn.set_sensitive(True))
+            GLib.idle_add(lambda: self.kisak_btn.set_label("Install Kisak Mesa"))
+            GLib.idle_add(lambda: self.kisak_btn.add_css_class("suggested-action"))
+        else:
+            GLib.idle_add(lambda: self.kisak_btn.set_label("Not Yet Supported (26.04)"))
+
     def on_resolve_browse(self, btn):
         dialog = Gtk.FileDialog(title="Select DaVinci Resolve .zip")
         dialog.open(self, None, self._on_zip_selected)
@@ -527,13 +643,32 @@ class DarksideWindow(Adw.ApplicationWindow):
         button.add_css_class("suggested-action")
 
     def show_about_window(self, button):
-        about = Adw.AboutWindow(transient_for=self, application_name="Welcome to Darkside", developer_name="Steve Darkside QC", version="1.0.0 (26.04 Core)")
-        about.set_application_icon("welcome-to-darkside")
-        about.add_link("GitHub", "https://github.com/SteveDarksideQC")
-        about.add_link("YouTube", "https://www.youtube.com/@SteveDarksideQC")
-        about.add_link("Ko-fi", "https://ko-fi.com/stevedarksideqc")
-        about.add_link("PayPal", "https://paypal.me/SteveDarksideQC")
-        about.present()
+        try:
+            about = Adw.AboutDialog(
+                application_name="Welcome to Darkside",
+                developer_name="Steve Darkside QC",
+                version="1.0.0 (26.04 Core)",
+                application_icon="welcome-to-darkside"
+            )
+            about.add_link("GitHub", "https://github.com/SteveDarksideQC")
+            about.add_link("YouTube", "https://www.youtube.com/@SteveDarksideQC")
+            about.add_link("Ko-fi", "https://ko-fi.com/stevedarksideqc")
+            about.add_link("PayPal", "https://paypal.me/SteveDarksideQC")
+            about.present(self)
+        except AttributeError:
+            # Fallback for systems that haven't updated to Libadwaita 1.5+ yet
+            about = Adw.AboutWindow(
+                transient_for=self,
+                application_name="Welcome to Darkside",
+                developer_name="Steve Darkside QC",
+                version="1.0.0 (26.04 Core)",
+                application_icon="welcome-to-darkside"
+            )
+            about.add_link("GitHub", "https://github.com/SteveDarksideQC")
+            about.add_link("YouTube", "https://www.youtube.com/@SteveDarksideQC")
+            about.add_link("Ko-fi", "https://ko-fi.com/stevedarksideqc")
+            about.add_link("PayPal", "https://paypal.me/SteveDarksideQC")
+            about.present()
 
     def on_master_toggled(self, switch, gparam):
         if self.is_initializing_ui: return
@@ -615,7 +750,7 @@ class DarksideWindow(Adw.ApplicationWindow):
             sh_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "software_engine.sh")
             subprocess.run(["pkexec", "bash", sh_path, job_name], check=True)
             
-            if is_app_installed(apt_cmd=apt_cmd, flatpak_id=flatpak_id):
+            if is_app_installed(apt_cmd=apt_cmd, flatpak_id=flatpak_id) or job_name.startswith("install_nvidia"):
                 GLib.idle_add(lambda: button.set_label("Installed"))
                 GLib.idle_add(lambda: button.remove_css_class("suggested-action"))
             else:
