@@ -190,7 +190,7 @@ class DarksideWindow(Adw.ApplicationWindow):
         if self.is_nvidia:
             if self.is_nvidia_5000:
                 cur_ver = get_installed_nvidia_version()
-                title = "Install NVIDIA 595 Open Drivers"
+                title = "Install NVIDIA Open Drivers"
                 if cur_ver:
                     sub = f"Currently Installed: v{cur_ver} [APT]"
                 else:
@@ -231,6 +231,25 @@ class DarksideWindow(Adw.ApplicationWindow):
             drv_grp.add(rocm_row)
 
         page_drv.add(drv_grp)
+
+        # LINUX DDU / HARDWARE SWAP PROTOCOL
+        swap_grp = Adw.PreferencesGroup(title="Hardware Swap Protocol (Linux DDU)", description="Safely purges old drivers and auto-installs new ones BEFORE you swap the physical card.")
+        
+        swap_model = Gtk.StringList.new([
+            "NVIDIA New Open", 
+            "NVIDIA Older Proprietary", 
+            "AMD Radeon / Intel Arc"
+        ])
+        self.swap_combo = Adw.ComboRow(title="Next GPU Target", model=swap_model)
+        swap_grp.add(self.swap_combo)
+        
+        swap_row = Adw.ActionRow(title="Execute Protocol", subtitle="Warning: System shuts down automatically upon completion.")
+        swap_btn = Gtk.Button(label="Initiate Swap & Shutdown", valign=Gtk.Align.CENTER, css_classes=["destructive-action", "pill"])
+        swap_btn.connect("clicked", self.on_hardware_swap_clicked)
+        swap_row.add_suffix(swap_btn)
+        swap_grp.add(swap_row)
+
+        page_drv.add(swap_grp)
 
         nv_fix = Adw.PreferencesGroup(title="NVIDIA Troubleshooting")
         for title, sub, job in [
@@ -291,7 +310,7 @@ class DarksideWindow(Adw.ApplicationWindow):
         page_kernel.add(grub_group)
         
         kernel_maint_group = Adw.PreferencesGroup(title="Kernel Maintenance")
-        for title, sub, job in [("Rebuild Kernel Modules (DKMS)", "Fixes NVIDIA or Wi-Fi drivers.", "rebuild_dkms"), ("Regenerate Initramfs", "Rebuilds boot images natively for Ubuntu.", "update_initramfs"), ("Remove Old Kernels", "Purges outdated kernels to free space.", "remove_kernels")]:
+        for title, sub, job in [("Rebuild Kernel Modules (DKMS)", "Fixes NVIDIA or Wi-Fi drivers.", "rebuild_dkms"), ("Regenerate Initramfs (update-initramfs)", "Rebuilds boot images natively for Ubuntu.", "update_initramfs"), ("Remove Old Kernels", "Purges outdated kernels to free space.", "remove_kernels")]:
             kernel_maint_group.add(self.create_maintenance_group_row(title, sub, job, True))
         page_kernel.add(kernel_maint_group)
 
@@ -580,6 +599,20 @@ class DarksideWindow(Adw.ApplicationWindow):
         self.main_stack.add_named(box, "dashboard_screen")
 
     # --- ACTION HANDLERS ---
+    def on_hardware_swap_clicked(self, button):
+        idx = self.swap_combo.get_selected()
+        target = "nvidia_open" if idx == 0 else "nvidia_prop" if idx == 1 else "amd_intel"
+        button.set_label("Preparing & Shutting Down...")
+        button.set_sensitive(False)
+        threading.Thread(target=self._exec_hardware_swap, args=(target,)).start()
+
+    def _exec_hardware_swap(self, target):
+        try:
+            sh_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "maintenance.sh")
+            subprocess.run(["pkexec", "bash", sh_path, "hardware_swap", target], check=True)
+        except subprocess.CalledProcessError:
+            pass # System is likely shutting down or user canceled pkexec
+
     def _verify_repo_support(self):
         support_data = check_repo_support_cached()
         if support_data.get("kisak_supported", False):
@@ -656,7 +689,7 @@ class DarksideWindow(Adw.ApplicationWindow):
             about.add_link("PayPal", "https://paypal.me/SteveDarksideQC")
             about.present(self)
         except AttributeError:
-            # Fallback for systems that haven't updated to Libadwaita 1.5+ yet
+            # Fallback for older Libadwaita versions
             about = Adw.AboutWindow(
                 transient_for=self,
                 application_name="Welcome to Darkside",

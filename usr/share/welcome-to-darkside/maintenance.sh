@@ -102,5 +102,46 @@ case $JOB in
         apt-get clean && apt-get autoremove -y
         journalctl --vacuum-time=3d
         ;;
+    "hardware_swap")
+        NEXT_GPU=$2
+        echo "Initiating Hardware Swap Protocol..."
+        
+        # STEP 1: Purge NVIDIA if it currently exists
+        if dpkg -l | grep -q "^ii  nvidia-driver"; then
+            apt-get purge -y "^nvidia-.*" "^libnvidia-.*"
+            rm -f /etc/modprobe.d/99-darkside-nvidia-power.conf
+            rm -f /etc/modprobe.d/99-darkside-nvidia-drm.conf
+        fi
+
+        # STEP 2: Prep for the NEW card dynamically
+        if [ "$NEXT_GPU" == "nvidia_open" ]; then
+            add-apt-repository ppa:graphics-drivers/ppa -y
+            apt-get update -y
+            LATEST_OPEN=$(apt-cache pkgnames | grep -E '^nvidia-driver-[0-9]+-open$' | sort -V | tail -n 1)
+            if [ -n "$LATEST_OPEN" ]; then
+                apt-get install -y "$LATEST_OPEN" "${LATEST_OPEN/-driver-/-dkms-}"
+            fi
+        elif [ "$NEXT_GPU" == "nvidia_prop" ]; then
+            add-apt-repository ppa:graphics-drivers/ppa -y
+            apt-get update -y
+            LATEST_PROP=$(apt-cache pkgnames | grep -E '^nvidia-driver-[0-9]+$' | sort -V | tail -n 1)
+            if [ -n "$LATEST_PROP" ]; then
+                apt-get install -y "$LATEST_PROP"
+            fi
+        elif [ "$NEXT_GPU" == "amd_intel" ]; then
+            apt-get purge -y "rocm-*" || true
+            sed -i 's/amdgpu.noretry=0 //g' /etc/default/grub
+            sed -i 's/amdgpu.runpm=0 //g' /etc/default/grub
+            sed -i 's/i915.enable_psr=0 //g' /etc/default/grub
+        fi
+
+        # STEP 3: Finalize and Shutdown
+        update-grub
+        update-initramfs -u -k all
+        apt-get autoremove -y
+        
+        sleep 3
+        shutdown -h now
+        ;;
     *) echo "Unknown maintenance job: $JOB" ;;
 esac
