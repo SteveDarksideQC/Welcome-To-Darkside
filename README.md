@@ -78,6 +78,7 @@ sudo apt install ./welcome-to-darkside_1.0.0_all.deb
 If you need to remove the application from your system, simply run:
 
 sudo apt remove welcome-to-darkside
+
 (Note: This only removes the Darkside app itself. Any software, kernels, tweaks, or Flatpaks you installed using the app will remain safely on your system).
 
 🐛 Bug Reports & Troubleshooting
