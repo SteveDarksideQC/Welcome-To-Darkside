@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+# Welcome to Darkside - Launcher
+# Executes the main GTK4 Python application
+
+export GDK_BACKEND=wayland,x11
+python3 /usr/share/welcome-to-darkside/main.py "$@"

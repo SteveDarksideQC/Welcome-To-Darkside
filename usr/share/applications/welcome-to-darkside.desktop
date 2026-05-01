@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Welcome to Darkside
+Comment=The ultimate post-install optimizer and software hub.
+Exec=python3 /usr/share/welcome-to-darkside/main.py
+Icon=welcome-to-darkside
+Terminal=false
+Type=Application
+Categories=System;Settings;Utility;
+Keywords=system;tweaks;kernel;software;darkside;
+StartupNotify=true
