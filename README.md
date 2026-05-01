@@ -1,12 +1,14 @@
 <div align="center">
   <img width="150" height="150" alt="welcome-to-darkside" src="https://github.com/user-attachments/assets/6b5343f3-f6ae-4e42-b711-15a9fb7e2c26" />
 
-  
-  ⚠️ **BETA WARNING:** Welcome to Darkside is currently in Testing. While it has been built carefully, it modifies deep system parameters and bootloader configurations. **Please ensure you have backed up any critical data before using the extreme optimizations.** Use at your own risk.
   # Welcome to Darkside
 
   **The ultimate GTK4 post-install optimizer and software hub for Ubuntu 26.04+.**  
   Unleash your hardware with 1-click system tweaks, custom gaming kernels, automated maintenance, and an 80+ app macro-installer for Linux gamers and creators.
+
+  <br>
+
+  ⚠️ **BETA WARNING:** Welcome to Darkside is currently in Testing. While it has been built carefully, it modifies deep system parameters and bootloader configurations. **Please ensure you have backed up any critical data before using the extreme optimizations.** Use at your own risk.
 </div>
 
 ---
@@ -46,6 +48,9 @@
     <td><img alt="Welcome To Darkside-9" src="https://github.com/user-attachments/assets/d3b51b7b-743c-4c85-85fa-7a8e28bd03aa" width="100%" /></td>
     <td><img alt="Welcome To Darkside-10" src="https://github.com/user-attachments/assets/9c14206f-aa83-4fb7-a7a2-0d738464be1d" width="100%" /></td>
   </tr>
+  <tr>
+    <td colspan="2" align="center"><img alt="Welcome To Darkside 11" src="https://github.com/user-attachments/assets/d8cd9a5b-f371-43f6-b111-275ba86b7be1" width="100%" /></td>
+  </tr>
 </table>
 
 ---
@@ -71,6 +76,7 @@ sudo apt install ./welcome-to-darkside_1.0.0_all.deb
 
 🗑️ Uninstallation
 If you need to remove the application from your system, simply run:
+
 sudo apt remove welcome-to-darkside
 (Note: This only removes the Darkside app itself. Any software, kernels, tweaks, or Flatpaks you installed using the app will remain safely on your system).
 
