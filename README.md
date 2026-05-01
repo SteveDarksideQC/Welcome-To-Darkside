@@ -92,8 +92,8 @@ Screenshots: If a UI element is broken or misaligned, include a screenshot!
 ☕ Support the Project
 If this tool saved you hours of setting up your Linux rig or finally got DaVinci Resolve working flawlessly, consider supporting the project!
 
-🎥 Subscribe: Steve Darkside QC on YouTube
+🎥 Subscribe: Steve Darkside QC on YouTube: https://www.youtube.com/@SteveDarksideQC
 
-☕ Buy me a Coffee: Ko-fi
+☕ Buy me a Coffee: Ko-fi: https://ko-fi.com/stevedarksideqc
 
-💳 PayPal: PayPal.me/SteveDarksideQC
+💳 PayPal: [PayPal.me/SteveDarksideQC](https://paypal.me/SteveDarksideQC)
