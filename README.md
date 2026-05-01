@@ -1,6 +1,7 @@
 <div align="center">
   <img width="150" height="150" alt="welcome-to-darkside" src="https://github.com/user-attachments/assets/6b5343f3-f6ae-4e42-b711-15a9fb7e2c26" />
 
+  
   ⚠️ **BETA WARNING:** Welcome to Darkside is currently in Testing. While it has been built carefully, it modifies deep system parameters and bootloader configurations. **Please ensure you have backed up any critical data before using the extreme optimizations.** Use at your own risk.
   # Welcome to Darkside
 
