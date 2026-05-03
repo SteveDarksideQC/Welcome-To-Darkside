@@ -8,6 +8,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 JOB=$1
+REAL_USER=${SUDO_USER:-$(logname)}
 echo "Starting Kernel Engine Job: $JOB"
 
 case $JOB in
@@ -27,31 +28,22 @@ case $JOB in
         ;;
         
     "build_tkg")
-        echo "Preparing linux-tkg Auto-Compiler..."
+        echo "Launching TKG Builder..."
+        apt-get update -y
         apt-get install -y git build-essential flex bison dwarves libssl-dev libelf-dev
         
-        # Clean up old builds if they exist
-        rm -rf /tmp/darkside-tkg
-        mkdir -p /tmp/darkside-tkg
-        cd /tmp/darkside-tkg
+        # We must open a visible terminal because TKG requires user input!
+        TKG_CMD="rm -rf /tmp/darkside-tkg && git clone https://github.com/Frogging-Family/linux-tkg.git /tmp/darkside-tkg && cd /tmp/darkside-tkg && ./install.sh; echo -e '\nPress Enter to close...'; read"
         
-        echo "Cloning linux-tkg repository..."
-        git clone https://github.com/Frogging-Family/linux-tkg.git
-        cd linux-tkg
-        
-        echo "Injecting Darkside Custom Configuration (BORE, 1000Hz, Native CPU)..."
-        cat << 'CFG' > customization.cfg
-_cpusched="bore"
-_compiler="gcc"
-_processor_opt="native"
-_timer_freq="1000"
-_tickless="3"
-_mitigations="false"
-CFG
-
-        echo "Starting compilation (This will take a while based on your CPU)..."
-        # Bypasses the interactive prompts and forces the install
-        yes "" | ./install.sh install
+        if command -v gnome-terminal &> /dev/null; then
+            sudo -u "$REAL_USER" gnome-terminal -- bash -c "$TKG_CMD"
+        elif command -v konsole &> /dev/null; then
+            sudo -u "$REAL_USER" konsole -e bash -c "$TKG_CMD"
+        elif command -v x-terminal-emulator &> /dev/null; then
+            sudo -u "$REAL_USER" x-terminal-emulator -e bash -c "$TKG_CMD"
+        else
+            echo "Error: No terminal emulator found to launch TKG builder."
+        fi
         ;;
         
     *)
