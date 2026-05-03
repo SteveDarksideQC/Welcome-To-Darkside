@@ -8,6 +8,7 @@ _ = lambda s: s
 USER_CONFIG_DIR = os.path.expanduser("~/.config/darkside-tweaks")
 SAFETY_FLAG_FILE = os.path.join(USER_CONFIG_DIR, "safety_setup_done")
 REPO_CACHE_FILE = os.path.join(USER_CONFIG_DIR, "repo_cache.json")
+WINDOW_STATE_FILE = os.path.join(USER_CONFIG_DIR, "window_state.json")
 
 # --- DYNAMIC ICON GENERATOR ---
 ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
@@ -93,9 +94,26 @@ class DarksideWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.set_title("Welcome to Darkside")
-        self.set_default_size(1200, 850)
         self.set_icon_name("welcome-to-darkside")
         os.makedirs(USER_CONFIG_DIR, exist_ok=True)
+        
+        # --- WINDOW STATE RECOVERY ---
+        start_w, start_h, start_max = 1200, 850, False
+        if os.path.exists(WINDOW_STATE_FILE):
+            try:
+                with open(WINDOW_STATE_FILE, 'r') as f:
+                    w_state = json.load(f)
+                    start_w = w_state.get("width", 1200)
+                    start_h = w_state.get("height", 850)
+                    start_max = w_state.get("maximized", False)
+            except Exception: pass
+            
+        self.set_default_size(start_w, start_h)
+        if start_max: self.maximize()
+        
+        self.connect("close-request", self.on_window_close)
+        # -----------------------------
+
         self.is_task_running = False
         self.is_initializing_ui = True 
         self.child_switches = []
@@ -115,6 +133,17 @@ class DarksideWindow(Adw.ApplicationWindow):
         else: self.main_stack.set_visible_child_name("dashboard_screen")
         self.is_initializing_ui = False
 
+    def on_window_close(self, *args):
+        state = {
+            "width": self.get_width(),
+            "height": self.get_height(),
+            "maximized": self.is_maximized()
+        }
+        try:
+            with open(WINDOW_STATE_FILE, 'w') as f: json.dump(state, f)
+        except Exception: pass
+        return False
+
     def build_safety_screen(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.append(Adw.HeaderBar())
@@ -125,15 +154,20 @@ class DarksideWindow(Adw.ApplicationWindow):
         self.progress_bar.set_size_request(300, -1)
         self.button_box.append(self.progress_bar)
         
-        setup_btn = Gtk.Button(label="Setup Safety Net", css_classes=["suggested-action", "pill"])
-        setup_btn.set_size_request(300, 50)
-        setup_btn.connect("clicked", self.on_setup_safety_clicked)
-        self.button_box.append(setup_btn)
+        self.setup_btn = Gtk.Button(label="Setup Safety Net", css_classes=["suggested-action", "pill"])
+        self.setup_btn.set_size_request(300, 50)
+        self.setup_btn.connect("clicked", self.on_setup_safety_clicked)
+        self.button_box.append(self.setup_btn)
         
-        skip_btn = Gtk.Button(label="Skip (I like living dangerously)", css_classes=["destructive-action", "pill"])
-        skip_btn.set_size_request(300, 40)
-        skip_btn.connect("clicked", lambda b: self.main_stack.set_visible_child_name("dashboard_screen"))
-        self.button_box.append(skip_btn)
+        self.skip_btn = Gtk.Button(label="Skip (I like living dangerously)", css_classes=["destructive-action", "pill"])
+        self.skip_btn.set_size_request(300, 40)
+        self.skip_btn.connect("clicked", self.on_skip_safety_clicked)
+        self.button_box.append(self.skip_btn)
+
+        self.next_btn = Gtk.Button(label="Next", visible=False, css_classes=["suggested-action", "pill"])
+        self.next_btn.set_size_request(300, 50)
+        self.next_btn.connect("clicked", self.on_next_clicked)
+        self.button_box.append(self.next_btn)
         
         box.append(status_page)
         box.append(self.button_box)
@@ -224,7 +258,6 @@ class DarksideWindow(Adw.ApplicationWindow):
             drv_grp.add(kisak_row)
             threading.Thread(target=self._verify_repo_support).start()
 
-            # FIXED: Accurate ROCm Installation Detection
             rocm_installed = subprocess.run(["dpkg", "-s", "rocm"], capture_output=True).returncode == 0
             rocm_row = Adw.ActionRow(title="Install AMD ROCm Compute", subtitle="Required for DaVinci Resolve and AI rendering. [APT]")
             rocm_btn = Gtk.Button(label="Installed" if rocm_installed else "Install", valign=Gtk.Align.CENTER)
@@ -622,7 +655,7 @@ class DarksideWindow(Adw.ApplicationWindow):
             sh_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "maintenance.sh")
             subprocess.run(["pkexec", "bash", sh_path, "hardware_swap", target], check=True)
         except subprocess.CalledProcessError:
-            pass # System is likely shutting down or user canceled pkexec
+            pass 
 
     def _verify_repo_support(self):
         support_data = check_repo_support_cached()
@@ -793,7 +826,6 @@ class DarksideWindow(Adw.ApplicationWindow):
             sh_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "software_engine.sh")
             subprocess.run(["pkexec", "bash", sh_path, job_name], check=True)
             
-            # FIXED: UI Logic now correctly interprets exit code 0 for driver installations as a success
             is_success = False
             if job_name in ["install_rocm", "install_kisak"] or job_name.startswith("install_nvidia"):
                 is_success = True
@@ -803,7 +835,7 @@ class DarksideWindow(Adw.ApplicationWindow):
             if is_success:
                 GLib.idle_add(lambda: button.set_label("Installed"))
                 GLib.idle_add(lambda: button.remove_css_class("suggested-action"))
-                GLib.idle_add(lambda: button.set_sensitive(False)) # Greys out the button upon success
+                GLib.idle_add(lambda: button.set_sensitive(False)) 
             else:
                 GLib.idle_add(lambda: button.set_label("Failed"))
                 GLib.idle_add(lambda: button.set_sensitive(True))

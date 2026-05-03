@@ -19,15 +19,9 @@ case $JOB in
         ;;
     "install_rocm")
         echo "Initiating native ROCm Compute installation..."
-        
-        # 1. Update and forcefully install the native 26.04 package non-interactively
         apt-get update -y
         DEBIAN_FRONTEND=noninteractive apt-get install -y rocm
-        
-        # 2. Crucial: Add the user to the render and video groups so apps can access the GPU
         usermod -aG video,render "$REAL_USER"
-        
-        # 3. Force udev to recognize the KFD (Kernel Fusion Driver) instantly without rebooting
         echo 'SUBSYSTEM=="kfd", KERNEL=="kfd", TAG+="uaccess", GROUP="video"' > /etc/udev/rules.d/70-kfd.rules
         udevadm control --reload-rules && udevadm trigger
         ;;
@@ -52,7 +46,19 @@ case $JOB in
         RUN_FILE=$(find /tmp/resolve_installer -name "*.run" | head -n 1)
         if [ -n "$RUN_FILE" ]; then chmod +x "$RUN_FILE"; "$RUN_FILE" -i -y; fi
         rm -rf /tmp/resolve_installer
-        apt update -y && apt install -y libapr1 libaprutil1 libxcb-composite0 libxcb-cursor0 libxcb-damage0 ocl-icd-libopencl1 rocm-opencl-icd
+        
+        # Install generic Resolve dependencies
+        apt update -y && apt install -y libapr1 libaprutil1 libxcb-composite0 libxcb-cursor0 libxcb-damage0 ocl-icd-libopencl1
+        
+        # Inject ROCm ONLY if an AMD GPU is detected
+        if lspci | grep -iE 'vga|3d' | grep -i amd > /dev/null; then
+            echo "AMD GPU detected. Injecting native ROCm compute stack for DaVinci Resolve..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y rocm
+            usermod -aG video,render "$REAL_USER"
+            echo 'SUBSYSTEM=="kfd", KERNEL=="kfd", TAG+="uaccess", GROUP="video"' > /etc/udev/rules.d/70-kfd.rules
+            udevadm control --reload-rules && udevadm trigger
+        fi
+
         RESOLVE_LIB="/opt/resolve/libs"
         if [ -d "$RESOLVE_LIB" ]; then
             mkdir -p "$RESOLVE_LIB/disabled-libraries"
