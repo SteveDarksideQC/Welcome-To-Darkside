@@ -97,6 +97,9 @@ class DarksideWindow(Adw.ApplicationWindow):
         self.set_icon_name("welcome-to-darkside")
         os.makedirs(USER_CONFIG_DIR, exist_ok=True)
         
+        # UI State Trackers
+        self.app_state_buttons = []
+        
         # --- WINDOW STATE RECOVERY ---
         start_w, start_h, start_max = 1200, 850, False
         if os.path.exists(WINDOW_STATE_FILE):
@@ -260,13 +263,13 @@ class DarksideWindow(Adw.ApplicationWindow):
 
             rocm_installed = subprocess.run(["dpkg", "-s", "rocm"], capture_output=True).returncode == 0
             rocm_row = Adw.ActionRow(title="Install AMD ROCm Compute", subtitle="Required for DaVinci Resolve and AI rendering. [APT]")
-            rocm_btn = Gtk.Button(label="Installed" if rocm_installed else "Install", valign=Gtk.Align.CENTER)
-            rocm_btn.set_sensitive(not rocm_installed)
+            self.rocm_btn = Gtk.Button(label="Installed" if rocm_installed else "Install", valign=Gtk.Align.CENTER)
+            self.rocm_btn.set_sensitive(not rocm_installed)
             if not rocm_installed:
-                rocm_btn.add_css_class("suggested-action")
-                rocm_btn.connect("clicked", lambda b: self.run_sw(b, "install_rocm", None, None))
-            rocm_btn.add_css_class("pill")
-            rocm_row.add_suffix(rocm_btn)
+                self.rocm_btn.add_css_class("suggested-action")
+                self.rocm_btn.connect("clicked", lambda b: self.run_sw(b, "install_rocm", None, None))
+            self.rocm_btn.add_css_class("pill")
+            rocm_row.add_suffix(self.rocm_btn)
             drv_grp.add(rocm_row)
 
         page_drv.add(drv_grp)
@@ -601,8 +604,14 @@ class DarksideWindow(Adw.ApplicationWindow):
                     btn.add_css_class("suggested-action")
                     btn.add_css_class("pill")
                     btn.connect("clicked", lambda b, j=job, a=apt, f=fp: self.run_sw(b, j, a, f))
+                else:
+                    btn.add_css_class("pill")
                 row.add_suffix(btn)
                 grp.add(row)
+                
+                # Add to state tracker for the Refresh Button
+                self.app_state_buttons.append({"btn": btn, "apt": apt, "fp": fp})
+                
             page.add(grp)
             self.view_stack.add_titled_with_icon(page, tab_id.lower(), tab_id, icon)
 
@@ -629,6 +638,13 @@ class DarksideWindow(Adw.ApplicationWindow):
 
         pop_box.append(Gtk.Separator(margin_top=5, margin_bottom=5))
 
+        # --- THE NEW REFRESH BUTTON ---
+        refresh_btn = Gtk.Button(label="Refresh App States")
+        refresh_btn.connect("clicked", self.on_refresh_clicked)
+        pop_box.append(refresh_btn)
+
+        pop_box.append(Gtk.Separator(margin_top=5, margin_bottom=5))
+
         about_btn = Gtk.Button(label="About Welcome to Darkside")
         about_btn.connect("clicked", self.show_about_window)
         pop_box.append(about_btn)
@@ -640,6 +656,45 @@ class DarksideWindow(Adw.ApplicationWindow):
         box.append(header)
         box.append(self.view_stack)
         self.main_stack.add_named(box, "dashboard_screen")
+
+    # --- NEW REFRESH LOGIC ---
+    def on_refresh_clicked(self, button):
+        button.set_label("Refreshing...")
+        button.set_sensitive(False)
+        threading.Thread(target=self._exec_refresh, args=(button,)).start()
+
+    def _exec_refresh(self, button):
+        updates = []
+        for item in self.app_state_buttons:
+            installed = is_app_installed(item["apt"], item["fp"])
+            updates.append((item["btn"], installed))
+        
+        rocm_installed = subprocess.run(["dpkg", "-s", "rocm"], capture_output=True).returncode == 0
+        GLib.idle_add(self._apply_refresh, updates, rocm_installed, button)
+
+    def _apply_refresh(self, updates, rocm_installed, button):
+        for btn, installed in updates:
+            if installed:
+                btn.set_label("Installed")
+                btn.set_sensitive(False)
+                btn.remove_css_class("suggested-action")
+            else:
+                btn.set_label("Install")
+                btn.set_sensitive(True)
+                btn.add_css_class("suggested-action")
+                
+        if hasattr(self, 'rocm_btn'):
+            if rocm_installed:
+                self.rocm_btn.set_label("Installed")
+                self.rocm_btn.set_sensitive(False)
+                self.rocm_btn.remove_css_class("suggested-action")
+            else:
+                self.rocm_btn.set_label("Install")
+                self.rocm_btn.set_sensitive(True)
+                self.rocm_btn.add_css_class("suggested-action")
+
+        button.set_label("Refresh App States")
+        button.set_sensitive(True)
 
     # --- ACTION HANDLERS ---
     def on_hardware_swap_clicked(self, button):
