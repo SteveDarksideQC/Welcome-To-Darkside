@@ -73,7 +73,7 @@ Open your terminal and run the following commands:
 cd ~/Downloads
 
 # Install the package and automatically resolve all dependencies
-sudo apt install ./welcome-to-darkside_1.0.0_all.deb
+sudo apt install ./welcome-to-darkside_1.0.1_all.deb
 
 🗑️ Uninstallation
 If you need to remove the application from your system, simply run:
