@@ -32,9 +32,36 @@ case $JOB in
         apt-get update -y
         apt-get install -y git build-essential flex bison dwarves libssl-dev libelf-dev
         
-        # We must open a visible terminal because TKG requires user input!
-        TKG_CMD="rm -rf /tmp/darkside-tkg && git clone https://github.com/Frogging-Family/linux-tkg.git /tmp/darkside-tkg && cd /tmp/darkside-tkg && ./install.sh; echo -e '\nPress Enter to close...'; read"
+        TKG_DIR="/home/$REAL_USER/.local/share/darkside-tkg"
         
+        # The logic to handle fresh installs vs updates seamlessly
+        TKG_CMD="
+        if [ ! -d '$TKG_DIR' ]; then
+            echo 'First run detected. Downloading linux-tkg...'
+            mkdir -p ~/.local/share
+            git clone https://github.com/Frogging-Family/linux-tkg.git '$TKG_DIR'
+            cd '$TKG_DIR'
+            echo 'Injecting Welcome to Darkside defaults...'
+            cat << 'CFG' > customization.cfg
+_cpusched=\"bore\"
+_compiler=\"gcc\"
+_processor_opt=\"native\"
+_timer_freq=\"1000\"
+_tickless=\"3\"
+_mitigations=\"false\"
+CFG
+        else
+            echo 'Existing TKG build environment found. Updating script...'
+            cd '$TKG_DIR'
+            git pull
+        fi
+        
+        ./install.sh
+        echo -e '\nPress Enter to close...'
+        read
+        "
+        
+        # Launching the interactive terminal
         if command -v gnome-terminal &> /dev/null; then
             sudo -u "$REAL_USER" gnome-terminal -- bash -c "$TKG_CMD"
         elif command -v konsole &> /dev/null; then
