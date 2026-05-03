@@ -103,39 +103,86 @@ case $JOB in
         journalctl --vacuum-time=3d
         ;;
     "hardware_swap")
-        NEXT_GPU=$2
-        echo "Initiating Hardware Swap Protocol..."
+        TARGET=$2
+        echo "Initiating Hardware Swap Protocol: $TARGET..."
         
-        # STEP 1: Purge NVIDIA if it currently exists
+        # STEP 1: The Meta-Package Shield (Protect the Desktop from Autoremove)
+        apt-mark manual gdm3 ubuntu-desktop linux-firmware sddm kubuntu-desktop 2>/dev/null || true
+
+        # STEP 2: Clear Out Legacy X11 Configurations
+        rm -f /etc/X11/xorg.conf
+        rm -rf /etc/X11/xorg.conf.d/90-nvidia.conf
+        rm -f /etc/modprobe.d/99-darkside-nvidia-power.conf
+        rm -f /etc/modprobe.d/99-darkside-nvidia-drm.conf
+
+        # STEP 3: Purge NVIDIA (If present)
         if dpkg -l | grep -q "^ii  nvidia-driver"; then
             apt-get purge -y "^nvidia-.*" "^libnvidia-.*"
-            rm -f /etc/modprobe.d/99-darkside-nvidia-power.conf
-            rm -f /etc/modprobe.d/99-darkside-nvidia-drm.conf
         fi
 
-        # STEP 2: Prep for the NEW card dynamically
-        if [ "$NEXT_GPU" == "nvidia_open" ]; then
+        # STEP 4: Surgical GRUB Cleanup (Strips ONLY old GPU configs, leaves CPU configs intact)
+        sed -i 's/ nvidia-drm.modeset=[0-9]//g' /etc/default/grub
+        sed -i 's/ nvidia-drm.fbdev=[0-9]//g' /etc/default/grub
+        sed -i 's/ nvidia.NVreg_EnableGpuFirmware=[0-9]//g' /etc/default/grub
+        sed -i 's/ amdgpu.ppfeaturemask=[^ "]*//g' /etc/default/grub
+        sed -i 's/  / /g' /etc/default/grub # Clean up any double spaces left behind
+
+        # STEP 5: Prepare for the NEW card dynamically
+        if [ "$TARGET" == "nvidia_5000" ]; then
+            sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/&nvidia-drm.modeset=1 nvidia-drm.fbdev=1 /' /etc/default/grub
             add-apt-repository ppa:graphics-drivers/ppa -y
             apt-get update -y
             LATEST_OPEN=$(apt-cache pkgnames | grep -E '^nvidia-driver-[0-9]+-open$' | sort -V | tail -n 1)
             if [ -n "$LATEST_OPEN" ]; then
                 apt-get install -y "$LATEST_OPEN" "${LATEST_OPEN/-driver-/-dkms-}"
             fi
-        elif [ "$NEXT_GPU" == "nvidia_prop" ]; then
+
+        elif [ "$TARGET" == "nvidia_legacy" ]; then
+            sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/&nvidia-drm.modeset=1 nvidia-drm.fbdev=1 nvidia.NVreg_EnableGpuFirmware=1 /' /etc/default/grub
             add-apt-repository ppa:graphics-drivers/ppa -y
             apt-get update -y
             LATEST_PROP=$(apt-cache pkgnames | grep -E '^nvidia-driver-[0-9]+$' | sort -V | tail -n 1)
             if [ -n "$LATEST_PROP" ]; then
                 apt-get install -y "$LATEST_PROP"
             fi
-        elif [ "$NEXT_GPU" == "amd_intel" ]; then
+
+        elif [ "$TARGET" == "amd" ] || [ "$TARGET" == "intel" ]; then
+            # Inject new parameters based on Open Source target
+            if [ "$TARGET" == "amd" ]; then
+                sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/&amdgpu.ppfeaturemask=0xffffffff /' /etc/default/grub
+            else
+                # Intel specific check to inject iommu=pt if not present
+                if ! grep -q "iommu=pt" /etc/default/grub; then
+                    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/&iommu=pt /' /etc/default/grub
+                fi
+            fi
+
+            # Clean out ROCm if present
             apt-get purge -y "rocm-*" || true
-            sed -i 's/amdgpu.noretry=0 //g' /etc/default/grub
-            sed -i 's/amdgpu.runpm=0 //g' /etc/default/grub
-            sed -i 's/i915.enable_psr=0 //g' /etc/default/grub
+
+            # Pull Mesa drivers & 32-bit architecture for Open Source Gaming
+            dpkg --add-architecture i386
+            apt-get update -y
+            apt-get install -y mesa-utils vulkan-tools libgl1-mesa-dri:i386 libgl1:i386 libglx-mesa0:i386 libvulkan1:i386 mesa-vulkan-drivers:i386
+
+            # Force Flatpak to abandon isolated NVIDIA runtimes
+            if command -v flatpak &> /dev/null; then
+                echo "Scrubbing Flatpak sandbox of NVIDIA runtimes..."
+                for rt in $(flatpak list --app-runtime 2>/dev/null | grep -i nvidia | awk '{print $2}'); do
+                    flatpak uninstall -y "$rt"
+                done
+                flatpak uninstall --unused -y
+                
+                echo "Repairing Flatpak filesystem links..."
+                flatpak repair
+                
+                echo "Updating remaining runtimes to pull Mesa..."
+                flatpak update -y
+            fi
         fi
 
-        # STEP 3: Finalize and Shutdown
+        # STEP 6: Finalize, Rebuild Images, and Shutdown safely
+        sed -i 's/  / /g' /etc/default/grub
         update-grub
         update-initramfs -u -k all
         apt-get autoremove -y

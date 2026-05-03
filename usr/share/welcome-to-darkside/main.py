@@ -235,13 +235,18 @@ class DarksideWindow(Adw.ApplicationWindow):
         # LINUX DDU / HARDWARE SWAP PROTOCOL
         swap_grp = Adw.PreferencesGroup(title="Hardware Swap Protocol (Linux DDU)", description="Safely purges old drivers and auto-installs new ones BEFORE you swap the physical card.")
         
+        # FIXED UI: Replaced truncated ComboRow with expansive ActionRow + DropDown
+        swap_row_gpu = Adw.ActionRow(title="Next GPU Target")
         swap_model = Gtk.StringList.new([
-            "NVIDIA New Open", 
-            "NVIDIA Older Proprietary", 
-            "AMD Radeon / Intel Arc"
+            "NVIDIA RTX 5000+ Series (Open Source Drivers)",
+            "NVIDIA RTX 4000- Series (Proprietary Drivers)",
+            "AMD Radeon RX Series (Native Mesa)",
+            "Intel Arc Graphics (Native Xe/i915)"
         ])
-        self.swap_combo = Adw.ComboRow(title="Next GPU Target", model=swap_model)
-        swap_grp.add(self.swap_combo)
+        self.swap_combo = Gtk.DropDown(model=swap_model)
+        self.swap_combo.set_valign(Gtk.Align.CENTER)
+        swap_row_gpu.add_suffix(self.swap_combo)
+        swap_grp.add(swap_row_gpu)
         
         swap_row = Adw.ActionRow(title="Execute Protocol", subtitle="Warning: System shuts down automatically upon completion.")
         swap_btn = Gtk.Button(label="Initiate Swap & Shutdown", valign=Gtk.Align.CENTER, css_classes=["destructive-action", "pill"])
@@ -601,7 +606,8 @@ class DarksideWindow(Adw.ApplicationWindow):
     # --- ACTION HANDLERS ---
     def on_hardware_swap_clicked(self, button):
         idx = self.swap_combo.get_selected()
-        target = "nvidia_open" if idx == 0 else "nvidia_prop" if idx == 1 else "amd_intel"
+        targets = ["nvidia_5000", "nvidia_legacy", "amd", "intel"]
+        target = targets[idx]
         button.set_label("Preparing & Shutting Down...")
         button.set_sensitive(False)
         threading.Thread(target=self._exec_hardware_swap, args=(target,)).start()
@@ -689,7 +695,6 @@ class DarksideWindow(Adw.ApplicationWindow):
             about.add_link("PayPal", "https://paypal.me/SteveDarksideQC")
             about.present(self)
         except AttributeError:
-            # Fallback for older Libadwaita versions
             about = Adw.AboutWindow(
                 transient_for=self,
                 application_name="Welcome to Darkside",
