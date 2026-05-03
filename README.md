@@ -49,9 +49,10 @@
     <td><img alt="Welcome To Darkside-10" src="https://github.com/user-attachments/assets/9c14206f-aa83-4fb7-a7a2-0d738464be1d" width="100%" /></td>
   </tr>
   <tr>
-    <td colspan="2" align="center"><img alt="Welcome To Darkside 11" src="https://github.com/user-attachments/assets/d8cd9a5b-f371-43f6-b111-275ba86b7be1" width="100%" /></td>
+    <td colspan="2" align="center"><img width="2560" height="1379" alt="Welcome To Darkside 11" src="https://github.com/user-attachments/assets/86630216-d5c3-4b3b-9afa-5259654559b2" width="100%" /></td>
   </tr>
 </table>
+ 
 
 ---
 
