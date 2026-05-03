@@ -18,8 +18,18 @@ case $JOB in
         apt-get update -y && apt-get upgrade -y
         ;;
     "install_rocm")
-        apt-get update -y && apt-get install -y rocm-core rocm-opencl-icd
+        echo "Initiating native ROCm Compute installation..."
+        
+        # 1. Update and forcefully install the native 26.04 package non-interactively
+        apt-get update -y
+        DEBIAN_FRONTEND=noninteractive apt-get install -y rocm
+        
+        # 2. Crucial: Add the user to the render and video groups so apps can access the GPU
         usermod -aG video,render "$REAL_USER"
+        
+        # 3. Force udev to recognize the KFD (Kernel Fusion Driver) instantly without rebooting
+        echo 'SUBSYSTEM=="kfd", KERNEL=="kfd", TAG+="uaccess", GROUP="video"' > /etc/udev/rules.d/70-kfd.rules
+        udevadm control --reload-rules && udevadm trigger
         ;;
     "install_nvidia_5000")
         add-apt-repository ppa:graphics-drivers/ppa -y

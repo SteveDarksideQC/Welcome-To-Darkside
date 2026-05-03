@@ -1,5 +1,5 @@
 Package: welcome-to-darkside
-Version: 1.0.0
+Version: 1.0.1
 Architecture: all
 Maintainer: Steve Darkside QC
 Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, pkexec, unzip, curl, wget, pciutils

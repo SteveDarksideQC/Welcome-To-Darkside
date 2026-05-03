@@ -198,7 +198,7 @@ class DarksideWindow(Adw.ApplicationWindow):
                 row = Adw.ActionRow(title=title, subtitle=sub)
                 
                 if cur_ver and cur_ver.startswith("595"):
-                    btn = Gtk.Button(label="Installed", valign=Gtk.Align.CENTER)
+                    btn = Gtk.Button(label="Installed", valign=Gtk.Align.CENTER, css_classes=["pill"])
                     btn.set_sensitive(False)
                 else:
                     btn = Gtk.Button(label="Update" if cur_ver else "Install", valign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill"])
@@ -224,9 +224,15 @@ class DarksideWindow(Adw.ApplicationWindow):
             drv_grp.add(kisak_row)
             threading.Thread(target=self._verify_repo_support).start()
 
+            # FIXED: Accurate ROCm Installation Detection
+            rocm_installed = subprocess.run(["dpkg", "-s", "rocm"], capture_output=True).returncode == 0
             rocm_row = Adw.ActionRow(title="Install AMD ROCm Compute", subtitle="Required for DaVinci Resolve and AI rendering. [APT]")
-            rocm_btn = Gtk.Button(label="Install", valign=Gtk.Align.CENTER, css_classes=["suggested-action", "pill"])
-            rocm_btn.connect("clicked", lambda b: self.run_sw(b, "install_rocm", None, None))
+            rocm_btn = Gtk.Button(label="Installed" if rocm_installed else "Install", valign=Gtk.Align.CENTER)
+            rocm_btn.set_sensitive(not rocm_installed)
+            if not rocm_installed:
+                rocm_btn.add_css_class("suggested-action")
+                rocm_btn.connect("clicked", lambda b: self.run_sw(b, "install_rocm", None, None))
+            rocm_btn.add_css_class("pill")
             rocm_row.add_suffix(rocm_btn)
             drv_grp.add(rocm_row)
 
@@ -235,7 +241,6 @@ class DarksideWindow(Adw.ApplicationWindow):
         # LINUX DDU / HARDWARE SWAP PROTOCOL
         swap_grp = Adw.PreferencesGroup(title="Hardware Swap Protocol (Linux DDU)", description="Safely purges old drivers and auto-installs new ones BEFORE you swap the physical card.")
         
-        # FIXED UI: Replaced truncated ComboRow with expansive ActionRow + DropDown
         swap_row_gpu = Adw.ActionRow(title="Next GPU Target")
         swap_model = Gtk.StringList.new([
             "NVIDIA RTX 5000+ Series (Open Source Drivers)",
@@ -686,7 +691,7 @@ class DarksideWindow(Adw.ApplicationWindow):
             about = Adw.AboutDialog(
                 application_name="Welcome to Darkside",
                 developer_name="Steve Darkside QC",
-                version="1.0.0 (26.04 Core)",
+                version="1.0.1 (26.04 Core)",
                 application_icon="welcome-to-darkside"
             )
             about.add_link("GitHub", "https://github.com/SteveDarksideQC")
@@ -699,7 +704,7 @@ class DarksideWindow(Adw.ApplicationWindow):
                 transient_for=self,
                 application_name="Welcome to Darkside",
                 developer_name="Steve Darkside QC",
-                version="1.0.0 (26.04 Core)",
+                version="1.0.1 (26.04 Core)",
                 application_icon="welcome-to-darkside"
             )
             about.add_link("GitHub", "https://github.com/SteveDarksideQC")
@@ -788,9 +793,17 @@ class DarksideWindow(Adw.ApplicationWindow):
             sh_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "software_engine.sh")
             subprocess.run(["pkexec", "bash", sh_path, job_name], check=True)
             
-            if is_app_installed(apt_cmd=apt_cmd, flatpak_id=flatpak_id) or job_name.startswith("install_nvidia"):
+            # FIXED: UI Logic now correctly interprets exit code 0 for driver installations as a success
+            is_success = False
+            if job_name in ["install_rocm", "install_kisak"] or job_name.startswith("install_nvidia"):
+                is_success = True
+            elif is_app_installed(apt_cmd=apt_cmd, flatpak_id=flatpak_id):
+                is_success = True
+
+            if is_success:
                 GLib.idle_add(lambda: button.set_label("Installed"))
                 GLib.idle_add(lambda: button.remove_css_class("suggested-action"))
+                GLib.idle_add(lambda: button.set_sensitive(False)) # Greys out the button upon success
             else:
                 GLib.idle_add(lambda: button.set_label("Failed"))
                 GLib.idle_add(lambda: button.set_sensitive(True))
