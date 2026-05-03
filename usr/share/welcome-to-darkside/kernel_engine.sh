@@ -34,28 +34,20 @@ case $JOB in
         
         TKG_DIR="/home/$REAL_USER/.local/share/darkside-tkg"
         
-        # The logic to handle fresh installs vs updates seamlessly
+        # True Interactive Logic: No forced configs injected.
         TKG_CMD="
         if [ ! -d '$TKG_DIR' ]; then
             echo 'First run detected. Downloading linux-tkg...'
             mkdir -p ~/.local/share
             git clone https://github.com/Frogging-Family/linux-tkg.git '$TKG_DIR'
             cd '$TKG_DIR'
-            echo 'Injecting Welcome to Darkside defaults...'
-            cat << 'CFG' > customization.cfg
-_cpusched=\"bore\"
-_compiler=\"gcc\"
-_processor_opt=\"native\"
-_timer_freq=\"1000\"
-_tickless=\"3\"
-_mitigations=\"false\"
-CFG
         else
             echo 'Existing TKG build environment found. Updating script...'
             cd '$TKG_DIR'
             git pull
         fi
         
+        # This will now trigger the full interactive questionnaire on the first run!
         ./install.sh
         echo -e '\nPress Enter to close...'
         read
